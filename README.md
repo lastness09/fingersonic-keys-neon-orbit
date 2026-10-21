@@ -10,6 +10,18 @@ Hold a few notes. Let them orbit. Neon Orbit turns Fingersonic Keys into a self-
 
 [Download App0 firmware](https://github.com/lastness09/fingersonic-keys-neon-orbit/releases/tag/v0.1.0) · [Keys community firmware](https://fingersonic.com/firmware/3/) · [Developer guide](https://github.com/lastness09/fingersonic-keys-devkit) · [Validation](VALIDATION.md) · [MIT license](LICENSE)
 
+## Watch the hardware demo
+
+[![Watch Neon Orbit running on Fingersonic Keys on YouTube](https://i.ytimg.com/vi/pRCk6zMpI8U/hqdefault.jpg)](https://www.youtube.com/shorts/pRCk6zMpI8U)
+
+**[Watch Neon Orbit on Fingersonic Keys - YouTube Short](https://www.youtube.com/shorts/pRCk6zMpI8U)**. See and hear the firmware in action on the instrument. The video opens on YouTube; the downloadable WAV is a separate host-rendered preview.
+
+## Develop your own version
+
+Start with the [Fingersonic Keys Developer Guide](https://github.com/lastness09/fingersonic-keys-devkit) for the GPIO mapping, matrix/contact behavior, App0/App1 layout and recovery requirements. Use this repository as the complete MIT-licensed arpeggiator/synth example, with its own pinned Arduino toolchain, source, tests and build instructions below. The guide links back to this example.
+
+[All Developer Kits](https://fingersonic.com/developers/#open-source-examples) · [Keys hardware contract](https://github.com/lastness09/fingersonic-keys-devkit/blob/main/HARDWARE_CONTRACT.md) · [Neon Orbit firmware page](https://fingersonic.com/firmware/3/)
+
 ## Make a small keyboard feel expansive
 
 - **Ten rhythm patterns:** straight, syncopated, Euclidean, three-note bursts and randomized motion.
