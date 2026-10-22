@@ -6,6 +6,7 @@
 - Add BLE MIDI input/output with the standard service/characteristic and Neon Orbit device name using NimBLE-Arduino 2.3.1.
 - Send generated arpeggiator notes on channel 1 to both connected transports; accept note input on channels 1-16, sustain, internal volume and preset selection.
 - Separate physical-key, per-channel USB and BLE note ownership. Add disconnect, pedal, queue-pressure, stale-output, retry and recovery cleanup.
+- Check NVS before optional BLE startup; skip BLE on initialization errors instead of entering the library's whole-NVS erase-on-error recovery.
 - Keep transport stack calls outside the audio task and perform optional BLE initialization in a background task.
 - Expand native validation from 28 to 48 tests and document pending device interoperability checks. This preview does not inherit the 0.1.0 hardware validation status.
 

@@ -3,6 +3,7 @@
 #include <USB.h>
 #include <USBMIDI.h>
 #include <NimBLEDevice.h>
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -110,7 +111,9 @@ class CharacteristicCallbacks final : public NimBLECharacteristicCallbacks {
 void startBle(void*) {
   // Optional radio initialization runs after the control loop is available;
   // physical App1 entry never waits for Bluetooth discovery or a connection.
-  if (NimBLEDevice::init(DeviceName)) {
+  // NimBLE's own NVS-error recovery can erase the entire NVS partition.
+  // Preflight without erasing: on a storage error, leave BLE disabled instead.
+  if (nvs_flash_init() == ESP_OK && NimBLEDevice::init(DeviceName)) {
     auto* server = NimBLEDevice::createServer();
     if (server) {
       server->setCallbacks(&serverCallbacks, false);

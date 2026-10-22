@@ -149,7 +149,7 @@ This firmware is for **Fingersonic Keys**, ESP32-S3, 16 MB flash, existing App0/
 
 This release intentionally focuses on arpeggiation and direct synthesis. It does not provide loops, the official chord mode, transposition, pitch bend or official app control. There is no sample playback and no SF2 installation step. If you extend it into a sampler, keep banks in **SF2**: the installed App1 uploader supports only executable BIN firmware and SF2 banks.
 
-Power, charging and battery-level management remain handled by the independent hardware chip. The application does not control charging or read battery state. It does not mount or format LittleFS, change the sound bank or write official instrument settings. The only intentional persistent write is OTA boot selection when you explicitly invoke App1 recovery.
+Power, charging and battery-level management remain handled by the independent hardware chip. The application does not control charging or read battery state. It does not mount or format LittleFS, change the sound bank or write official instrument settings. Application parameters are not saved. OTA boot selection is written when you explicitly invoke App1 recovery; the ESP32/Bluetooth stack may also maintain its own PHY, identity or bond state in NVS. BLE startup first checks NVS initialization and skips BLE on an error, before the library can take its erase-on-error path. The application never erases NVS to repair Bluetooth initialization.
 
 ## Installation and return to the official instrument
 
