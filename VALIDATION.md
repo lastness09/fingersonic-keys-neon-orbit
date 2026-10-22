@@ -10,10 +10,11 @@ Current preview: **0.2.0-beta.1**, October 22, 2026.
 ## Checks completed for the MIDI preview
 
 - Build: Arduino ESP32 **3.3.2**, Adafruit NeoPixel **1.15.1**, NimBLE-Arduino **2.3.1**; ESP32-S3, 240 MHz, 16 MB flash, DIO 80 MHz, custom partitions, internal RAM and **USB-OTG (TinyUSB)** with USB CDC disabled.
-- Application BIN: **676,880 bytes**, below the **2,097,152-byte** App0 limit. The build script checks image magic and ESP32-S3 chip ID; the release process also validates the ESP image checksum and appended hash using esptool.
-- SHA-256: `95e324e334b1fdac0c745dd88ae8efa918b88743dfa3f8bf21ce2aa12f2449db`.
+- Application BIN: **676,704 bytes**, below the **2,097,152-byte** App0 limit. The build script checks image magic and ESP32-S3 chip ID; the release process also validates the ESP image checksum and appended hash using esptool.
+- SHA-256: `0fd6300e6130c1ae498b07dc6548161d3b00d8aeb603abe3b9ff38fdce7850e7`.
 - Static data uses **127,380 bytes** according to the linker, leaving **200,300 bytes** of the linker's dynamic-memory budget. These are build statistics, not measurements of free heap after Bluetooth startup.
 - The native suite compiles the actual portable C++ engine, synthesis, controls, recovery, LEDs, MIDI framing, input ownership and output-buffer modules with warnings as errors. Device OTA functions are mocked; USB/TinyUSB, NimBLE, radio, DAC and FreeRTOS scheduling are not simulated by this suite.
+- BLE startup checks NVS initialization before calling NimBLE. On an initialization error it skips optional BLE, preventing the library from entering its whole-NVS erase-on-error path. The ESP32/Bluetooth stack can maintain its own PHY, identity or bond state; application controls are not saved.
 - The isolated package contains this MIT-licensed community application and public build documentation. The official product application, App1 uploader and factory bootloader remain outside this repository.
 
 ## Host test coverage

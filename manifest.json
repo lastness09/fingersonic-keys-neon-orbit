@@ -8,8 +8,8 @@
     "Adafruit NeoPixel": "1.15.1",
     "NimBLE-Arduino": "2.3.1"
   },
-  "bytes": 676880,
-  "sha256": "95e324e334b1fdac0c745dd88ae8efa918b88743dfa3f8bf21ce2aa12f2449db",
+  "bytes": 676704,
+  "sha256": "0fd6300e6130c1ae498b07dc6548161d3b00d8aeb603abe3b9ff38fdce7850e7",
   "app0Offset": "0x10000",
   "app0MaximumBytes": 2097152,
   "app1PreservedAt": "0x210000",
