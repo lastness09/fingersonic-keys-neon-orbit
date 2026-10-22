@@ -3,6 +3,8 @@
 #include "Controls.h"
 #include "App1Recovery.h"
 #include "PerformanceLeds.h"
+#include "MidiInput.h"
+#include "MidiOutput.h"
 #include "esp_partition.h"
 #include <stddef.h>
 
@@ -11,6 +13,12 @@ int _fltused = 0;
 void* memset(void* target, int value, size_t size) {
   auto* p = static_cast<unsigned char*>(target);
   while (size--) *p++ = static_cast<unsigned char>(value);
+  return target;
+}
+void* memcpy(void* target, const void* source, size_t size) {
+  auto* out = static_cast<unsigned char*>(target);
+  const auto* in = static_cast<const unsigned char*>(source);
+  while (size--) *out++ = *in++;
   return target;
 }
 }
@@ -22,6 +30,15 @@ static arp::Button button;
 static arp::RecoveryGesture gesture;
 static arp::DualContactKey contact;
 static arp::PerformanceLeds lights;
+static arp::MidiInput midiInput;
+static arp::MidiOutput midiOutput;
+static arp::MidiDelivery delivery;
+static arp::BleMidiDecoder bleDecoder;
+static arp::MidiMessage decoded[256];
+static int decodedCount = 0;
+static void decodedMessage(const arp::MidiMessage& message, void*) {
+  if (decodedCount < 256) decoded[decodedCount++] = message;
+}
 static esp_partition_t partition;
 static int present, setResult, setCalls, restarts, findErrors;
 
@@ -37,7 +54,10 @@ int esp_ota_set_boot_partition(const esp_partition_t* selected) {
 void esp_restart() { ++restarts; }
 
 #define API extern "C" __declspec(dllexport)
-API void reset() { engine.reset(); synth.begin(); lights.reset(); }
+API void reset() {
+  engine.reset(); synth.begin(); lights.reset(); midiInput.reset();
+  midiOutput = arp::MidiOutput{}; bleDecoder.reset(); decodedCount = 0;
+}
 API void note_on(int note, int vel) { engine.noteOn(note, vel); }
 API void note_off(int note) { engine.noteOff(note); }
 API void panic() { engine.panic(); synth.panic(); }
@@ -111,3 +131,43 @@ API int app1_case(int exists, unsigned address, unsigned size, int result) {
 API int app1_set_calls() { return setCalls; }
 API int app1_restarts() { return restarts; }
 API int app1_find_errors() { return findErrors; }
+API void midi_on(int source, int channel, int note, int velocity) {
+  midiInput.noteOn(arp::MidiSource(source), channel, note, velocity, engine);
+}
+API void midi_off(int source, int channel, int note) {
+  midiInput.noteOff(arp::MidiSource(source), channel, note, engine);
+}
+API void midi_cc(int source, int channel, int cc, int value) {
+  midiInput.control(arp::MidiSource(source), channel, cc, value, engine);
+}
+API void midi_disconnect(int source) { midiInput.releaseSource(arp::MidiSource(source), engine); }
+API int usb_decode(const unsigned char* bytes, unsigned char* out) {
+  arp::MidiMessage message;
+  if (!arp::decodeUsbMidi(bytes, message)) return 0;
+  out[0] = message.status; out[1] = message.data1; out[2] = message.data2;
+  return 1;
+}
+API int ble_decode(const unsigned char* bytes, unsigned length) {
+  decodedCount = 0;
+  return bleDecoder.decode(bytes, length, decodedMessage, nullptr);
+}
+API int ble_decoded_count() { return decodedCount; }
+API unsigned ble_decoded_message(int index) {
+  if (index < 0 || index >= decodedCount) return 0;
+  const auto& m = decoded[index];
+  return unsigned(m.status) | (unsigned(m.data1) << 8) | (unsigned(m.data2) << 16);
+}
+API int ble_encode(int status, int a, int b, unsigned now, unsigned char* out) {
+  return arp::encodeBleMidi({uint8_t(status), uint8_t(a), uint8_t(b)}, now, out);
+}
+API void out_ready(int ready) { midiOutput.setReady(ready); }
+API void out_panic() { midiOutput.panic(); }
+API int out_push(int status, int a, int b, unsigned now) {
+  return midiOutput.push({uint8_t(status), uint8_t(a), uint8_t(b)}, now);
+}
+API int out_next(unsigned now, unsigned char* out) {
+  if (!midiOutput.next(now, delivery)) return 0;
+  out[0] = delivery.message.status; out[1] = delivery.message.data1; out[2] = delivery.message.data2;
+  return 1;
+}
+API void out_ack() { midiOutput.acknowledge(delivery); }

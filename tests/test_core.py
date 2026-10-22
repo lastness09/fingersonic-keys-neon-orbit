@@ -1,4 +1,4 @@
-"""Exercise the actual portable C++ engine, synth, controls and App1 selector.
+"""Exercise the actual C++ engine, synth, controls, MIDI core and App1 selector.
 
 Windows: python tests/test_core.py --llvm-bin <directory containing clang++.exe>
 No board is connected, and the OTA APIs are mocked.
@@ -8,6 +8,7 @@ import array
 import ctypes
 import hashlib
 import math
+import random
 from pathlib import Path
 import subprocess
 import tempfile
@@ -37,6 +38,8 @@ class FirmwareTests(unittest.TestCase):
             str(ROOT / "tests/core_harness.cpp"), str(ROOT / "ArpEngine.cpp"),
             str(ROOT / "FmSynth.cpp"), str(ROOT / "PerformanceLeds.cpp"),
             str(ROOT / "App1Recovery.cpp"), str(mathlib),
+            str(ROOT / "MidiInput.cpp"), str(ROOT / "MidiProtocol.cpp"),
+            str(ROOT / "MidiOutput.cpp"),
             "-o", str(dll),
         ], check=True)
         cls.lib = ctypes.CDLL(str(dll))
@@ -57,10 +60,22 @@ class FirmwareTests(unittest.TestCase):
             "light_trigger": [ctypes.c_int] * 4 + [ctypes.c_uint],
             "light_render": [ctypes.c_uint, ctypes.c_uint, ctypes.c_int, ctypes.c_int,
                              ctypes.POINTER(ctypes.c_ubyte)],
+            "midi_on": [ctypes.c_int] * 4,
+            "midi_off": [ctypes.c_int] * 3,
+            "midi_cc": [ctypes.c_int] * 4,
+            "midi_disconnect": [ctypes.c_int],
+            "usb_decode": [ctypes.POINTER(ctypes.c_ubyte)] * 2,
+            "ble_decode": [ctypes.POINTER(ctypes.c_ubyte), ctypes.c_uint],
+            "ble_decoded_message": [ctypes.c_int],
+            "ble_encode": [ctypes.c_int] * 3 + [ctypes.c_uint, ctypes.POINTER(ctypes.c_ubyte)],
+            "out_ready": [ctypes.c_int],
+            "out_push": [ctypes.c_int] * 3 + [ctypes.c_uint],
+            "out_next": [ctypes.c_uint, ctypes.POINTER(ctypes.c_ubyte)],
         }
         for name, signature in signatures.items():
             getattr(cls.lib, name).argtypes = signature
         cls.lib.tick.restype = ctypes.c_uint
+        cls.lib.ble_decoded_message.restype = ctypes.c_uint
 
     @classmethod
     def tearDownClass(cls):
@@ -101,6 +116,238 @@ class FirmwareTests(unittest.TestCase):
         pixels = (ctypes.c_ubyte * 72)()
         self.lib.light_render(now, held, peak, preset, pixels)
         return [tuple(pixels[i:i + 3]) for i in range(0, 72, 3)]
+
+    def ble(self, data):
+        buf = (ctypes.c_ubyte * len(data))(*data)
+        valid = self.lib.ble_decode(buf, len(data))
+        messages = []
+        for i in range(self.lib.ble_decoded_count()):
+            packed = self.lib.ble_decoded_message(i)
+            messages.append((packed & 255, packed >> 8 & 255, packed >> 16 & 255))
+        return bool(valid), messages
+
+    def output(self, now=0, acknowledge=True):
+        buf = (ctypes.c_ubyte * 3)()
+        if not self.lib.out_next(now, buf):
+            return None
+        if acknowledge:
+            self.lib.out_ack()
+        return tuple(buf)
+
+    def connect_output(self):
+        self.lib.out_ready(1)
+        self.assertEqual(self.output(), (0xB0, 120, 0))
+        self.assertEqual(self.output(), (0xB0, 123, 0))
+
+    def test_midi_physical_usb_and_ble_note_ownership(self):
+        self.lib.set_octaves(1)
+        for source, velocity in [(0, 60), (1, 100), (2, 120)]:
+            self.lib.midi_on(source, 0, 60, velocity)
+        self.assertEqual(self.event(), (60, -1, 120))
+        self.lib.midi_off(1, 0, 60)
+        self.lib.midi_disconnect(2)
+        self.assertNotEqual(self.lib.held(), 0)
+        self.assertEqual(self.lib.active(), 60)
+        self.lib.midi_off(0, 0, 60)
+        self.assertEqual(self.event()[1], 60)
+        self.assertEqual(self.lib.held(), 0)
+
+    def test_midi_channels_are_independent_and_zero_velocity_releases(self):
+        self.lib.midi_on(1, 0, 60, 100)
+        self.lib.midi_on(1, 15, 60, 70)
+        self.lib.midi_on(1, 0, 60, 0)
+        self.assertNotEqual(self.lib.held(), 0)
+        self.lib.midi_off(1, 15, 60)
+        self.assertEqual(self.lib.held(), 0)
+
+    def test_midi_sustain_is_per_source_and_channel(self):
+        self.lib.midi_on(1, 0, 60, 90)
+        self.lib.midi_cc(1, 0, 64, 127)
+        self.lib.midi_off(1, 0, 60)
+        self.assertNotEqual(self.lib.held(), 0)
+        self.lib.midi_cc(2, 0, 64, 0)
+        self.lib.midi_cc(1, 1, 64, 0)
+        self.assertNotEqual(self.lib.held(), 0)
+        self.lib.midi_cc(1, 0, 64, 63)
+        self.assertEqual(self.lib.held(), 0)
+
+    def test_midi_reset_controllers_retains_held_notes(self):
+        self.lib.midi_cc(1, 0, 64, 127)
+        self.lib.midi_on(1, 0, 60, 90)
+        self.lib.midi_on(1, 0, 64, 100)
+        self.lib.midi_off(1, 0, 60)
+        self.lib.midi_cc(1, 0, 121, 0)
+        self.assertEqual(self.lib.held(), 1 << 16)
+        self.lib.midi_off(1, 0, 64)
+        self.assertEqual(self.lib.held(), 0)
+
+    def test_midi_all_notes_off_respects_pedal_all_sound_off_clears_notes(self):
+        self.lib.midi_cc(1, 0, 64, 127)
+        self.lib.midi_on(1, 0, 60, 90)
+        self.lib.midi_cc(1, 0, 123, 0)
+        self.assertNotEqual(self.lib.held(), 0)
+        self.lib.midi_cc(1, 0, 120, 0)
+        self.assertEqual(self.lib.held(), 0)
+        self.lib.midi_on(1, 0, 64, 90)
+        self.lib.midi_off(1, 0, 64)
+        self.assertNotEqual(self.lib.held(), 0)  # CC120 retained pedal state.
+        self.lib.midi_cc(1, 0, 64, 0)
+        self.assertEqual(self.lib.held(), 0)
+
+    def test_midi_disconnect_releases_all_channels_and_pedal_only_for_that_port(self):
+        self.lib.midi_on(0, 0, 48, 100)
+        self.lib.midi_on(2, 15, 71, 100)
+        self.lib.midi_on(1, 0, 60, 100)
+        self.lib.midi_on(1, 15, 64, 100)
+        self.lib.midi_cc(1, 15, 64, 127)
+        self.lib.midi_off(1, 15, 64)
+        self.lib.midi_disconnect(1)
+        self.assertEqual(self.lib.held(), 1 | (1 << 23))
+        self.lib.midi_disconnect(2)
+        self.assertEqual(self.lib.held(), 1)
+
+    def test_midi_input_uses_a0_c8_bounds_and_rejects_invalid_sources(self):
+        self.lib.set_octaves(1)
+        for note in [0, 20, 109, 127]:
+            self.lib.midi_on(1, 0, note, 127)
+        self.lib.midi_on(1, 16, 60, 100)
+        self.lib.midi_on(9, 0, 60, 100)
+        self.assertEqual(self.lib.held(), 0)
+        self.lib.midi_on(1, 0, 21, 100)
+        self.lib.midi_on(2, 15, 108, 100)
+        ons, _ = self.collect(RATE)
+        self.assertEqual([x[1] for x in ons], [21, 108, 21, 108])
+
+    def test_midi_inputs_drive_all_patterns_and_release_one_port_at_a_time(self):
+        for pattern in range(10):
+            with self.subTest(pattern=pattern):
+                self.lib.reset()
+                self.lib.set_octaves(1)
+                self.lib.set_pattern(pattern)
+                self.lib.midi_on(1, 0, 48, 100)
+                self.lib.midi_on(1, 0, 52, 110)
+                self.lib.midi_on(2, 15, 55, 120)
+                ons, offs = self.collect(RATE * 2)
+                self.assertEqual(len(ons), self.lib.pattern_mask(pattern).bit_count())
+                self.assertEqual(len(ons), len(offs))
+                self.assertTrue(all(event[1] in (48, 52, 55) for event in ons))
+                self.lib.midi_disconnect(1)
+                ons, offs = self.collect(RATE * 2)
+                self.assertTrue(all(event[1] == 55 for event in ons))
+                self.assertEqual(len(ons), len(offs))
+                self.lib.midi_disconnect(2)
+                self.assertEqual(self.collect(1000), ([], []))
+
+    def test_usb_midi_validates_cable_cin_lengths_and_data(self):
+        def decode(data):
+            buf = (ctypes.c_ubyte * 4)(*data)
+            out = (ctypes.c_ubyte * 3)()
+            return bool(self.lib.usb_decode(buf, out)), tuple(out)
+        self.assertEqual(decode([9, 0x9F, 60, 100]), (True, (0x9F, 60, 100)))
+        self.assertEqual(decode([12, 0xC2, 9, 255]), (True, (0xC2, 9, 0)))
+        for data in [[0x19, 0x90, 60, 1], [8, 0x90, 60, 1], [9, 0x90, 128, 1],
+                     [9, 0x90, 60, 128], [15, 0xF8, 0, 0], [4, 0xF0, 1, 2]]:
+            self.assertFalse(decode(data)[0])
+
+    def test_ble_midi_multiple_statuses_and_running_status(self):
+        valid, messages = self.ble([0x80, 0x80, 0x90, 60, 100, 64, 110,
+                                   0x81, 67, 120, 0x82, 0x80, 60, 0])
+        self.assertTrue(valid)
+        self.assertEqual(messages, [(0x90, 60, 100), (0x90, 64, 110),
+                                    (0x90, 67, 120), (0x80, 60, 0)])
+        self.assertEqual(self.ble([0x80, 0x80, 60, 100]), (False, []))
+
+    def test_ble_midi_program_changes_realtime_and_common_messages(self):
+        valid, messages = self.ble([0x80, 0x80, 0xC1, 2, 3, 0x81, 0xF8,
+                                   0x82, 4, 0x83, 0xF2, 0, 0, 0x84, 5])
+        self.assertTrue(valid)
+        self.assertEqual(messages, [(0xC1, n, 0) for n in [2, 3, 4, 5]])
+
+    def test_ble_midi_sysex_is_skipped_across_packets(self):
+        self.assertEqual(self.ble([0x80, 0x80, 0xF0, 1, 2]), (True, []))
+        self.assertEqual(self.ble([0x80, 3, 4, 0x81, 0xF8, 5, 0x82, 0xF7,
+                                   0x83, 0x90, 60, 100]), (True, [(0x90, 60, 100)]))
+
+    def test_ble_midi_truncated_and_malformed_packets_are_rejected(self):
+        for data in [[], [0x80], [0, 0x80, 0x90, 60, 100],
+                     [0xC0, 0x80, 0x90, 60, 100], [0x80, 0x80],
+                     [0x80, 0x80, 0x90, 60], [0x80, 0x80, 0x90, 60, 128],
+                     [0x80, 0x80, 0xF2, 0], [0x80, 0x80, 0xF4]]:
+            with self.subTest(data=data):
+                self.assertFalse(self.ble(data)[0])
+
+    def test_ble_midi_random_packets_never_emit_invalid_channel_data(self):
+        rng = random.Random(0x4D494449)
+        for _ in range(2000):
+            data = [rng.randrange(256) for _ in range(rng.randrange(65))]
+            if data and rng.randrange(2):
+                data[0] = 0x80 | rng.randrange(64)
+            _, messages = self.ble(data)
+            # Program/channel-pressure running status uses one data byte per message.
+            self.assertLessEqual(len(messages), max(0, len(data) - 3))
+            for status, first, second in messages:
+                self.assertTrue(0x80 <= status < 0xF0)
+                self.assertTrue(0 <= first <= 127 and 0 <= second <= 127)
+
+    def test_ble_midi_encoder_timestamp_wrap_and_message_lengths(self):
+        for now in [0, 127, 128, 8191, 8192, 0xFFFFFFFF]:
+            out = (ctypes.c_ubyte * 5)()
+            self.assertEqual(self.lib.ble_encode(0x90, 60, 100, now, out), 5)
+            self.assertEqual(tuple(out), (0x80 | ((now >> 7) & 63),
+                                         0x80 | (now & 127), 0x90, 60, 100))
+            self.assertEqual(self.ble(list(out)), (True, [(0x90, 60, 100)]))
+        self.assertEqual(self.lib.ble_encode(0xC0, 9, 0, 0, out), 4)
+        self.assertEqual(self.lib.ble_encode(0xF8, 0, 0, 0, out), 0)
+
+    def test_midi_output_retries_keep_off_before_next_on(self):
+        self.connect_output()
+        self.lib.out_push(0x90, 60, 100, 0)
+        self.assertEqual(self.output(0, False), (0x90, 60, 100))
+        self.assertEqual(self.output(1), (0x90, 60, 100))
+        self.lib.out_push(0x80, 60, 0, 2)
+        self.lib.out_push(0x90, 64, 100, 3)
+        self.assertEqual(self.output(4, False), (0x80, 60, 0))
+        self.assertEqual(self.output(5), (0x80, 60, 0))
+        self.assertEqual(self.output(6), (0x90, 64, 100))
+        self.assertIsNone(self.output(7))
+
+    def test_midi_output_panic_explicitly_releases_active_note(self):
+        self.connect_output()
+        self.lib.out_push(0x90, 60, 100, 0)
+        self.output()
+        self.lib.out_panic()
+        self.assertEqual(self.output(), (0x80, 60, 0))
+        self.assertEqual(self.output(), (0xB0, 120, 0))
+        self.assertEqual(self.output(), (0xB0, 123, 0))
+
+    def test_midi_output_overflow_and_old_backlog_enter_panic(self):
+        self.connect_output()
+        for i in range(64):
+            self.assertTrue(self.lib.out_push(0x90, 60, 100, 0))
+        self.assertFalse(self.lib.out_push(0x80, 60, 0, 0))
+        self.assertEqual(self.output(), (0xB0, 120, 0))
+        self.assertEqual(self.output(), (0xB0, 123, 0))
+        self.lib.out_push(0x90, 60, 100, 1)
+        self.assertEqual(self.output(102), (0xB0, 120, 0))
+        self.assertEqual(self.output(102), (0xB0, 123, 0))
+        self.assertIsNone(self.output(102))
+
+    def test_midi_output_reconnect_rejects_old_ack_and_queued_notes(self):
+        self.connect_output()
+        self.lib.out_push(0x90, 60, 100, 0)
+        self.assertEqual(self.output(0, False), (0x90, 60, 100))
+        self.lib.out_ready(0)
+        self.lib.out_push(0x90, 64, 100, 0)
+        self.lib.out_ready(1)
+        self.lib.out_ack()  # Completion from the old connection must be ignored.
+        self.assertEqual(self.output(), (0xB0, 120, 0))
+        self.assertEqual(self.output(), (0xB0, 123, 0))
+        self.assertIsNone(self.output())
+
+    def test_midi_output_age_uses_unsigned_clock_wrap(self):
+        self.connect_output()
+        self.lib.out_push(0x90, 60, 100, 0xFFFFFFF0)
+        self.assertEqual(self.output(0x10), (0x90, 60, 100))
 
     def test_all_ten_rhythms_match_their_grids_and_balance_gates(self):
         masks = set()
