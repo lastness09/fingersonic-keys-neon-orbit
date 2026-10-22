@@ -180,7 +180,7 @@ uint8_t ArpEngine::ledForNote(uint8_t note) {
 
 uint32_t ArpEngine::heldKeyMask() const {
   uint32_t mask = 0;
-  // Only physical roots are held; generated upper notes are indicated on attack.
+  // Input roots (physical or MIDI) are held; generated notes light on attack.
   for (uint8_t note = 0; note < 128; ++note)
     if (notes_[note]) mask |= uint32_t(1) << ledForNote(note);
   return mask;

@@ -11,12 +11,15 @@
 #include "Controls.h"
 #include "AudioOutput.h"
 #include "App1Recovery.h"
+#include "MidiInput.h"
+#include "MidiTransport.h"
 
 namespace {
 using namespace arp;
 Adafruit_NeoPixel leds(KeyCount, LedPin, NEO_GRB + NEO_KHZ800);
 ArpEngine engine;
 FmSynth synth;
+MidiInput noteInputs;
 AudioOutput audio;
 DualContactKey keys[KeyCount];
 Encoder leftEncoder, rightEncoder;
@@ -24,8 +27,14 @@ Button leftButton, rightButton;
 RecoveryGesture recovery;
 PerformanceLeds performanceLeds;
 
-enum class CommandType : uint8_t { On, Off, Pattern, Tempo, Preset, Volume, Octaves, Panic };
-struct Command { CommandType type; uint8_t note; uint16_t value; };
+enum class CommandType : uint8_t { On, Off, Control, SourceReset, Pattern, Tempo, Preset, Volume, Octaves, Panic };
+struct Command {
+  CommandType type;
+  uint8_t note;
+  uint16_t value;
+  MidiSource source = MidiSource::Keys;
+  uint8_t channel = 0;
+};
 constexpr uint8_t QueueLength = 64;
 StaticQueue_t queueStorage;
 uint8_t queueBytes[QueueLength * sizeof(Command)];
@@ -51,8 +60,9 @@ enum class Overlay : uint8_t { None, Pattern, Tempo, Preset, Volume, Octaves };
 Overlay overlay = Overlay::None;
 uint32_t overlayAt = 0;
 
-void send(CommandType type, uint16_t value = 0, uint8_t note = 0) {
-  Command command{type, note, value};
+void send(CommandType type, uint16_t value = 0, uint8_t note = 0,
+          MidiSource source = MidiSource::Keys, uint8_t channel = 0) {
+  Command command{type, note, value, source, channel};
   if (commands && xQueueSend(commands, &command, 0) == pdTRUE) return;
   // Queue saturation must stop sound rather than losing a release indefinitely.
   portENTER_CRITICAL(&sharedLock);
@@ -63,8 +73,10 @@ void send(CommandType type, uint16_t value = 0, uint8_t note = 0) {
 void showOverlay(Overlay kind) { overlay = kind; overlayAt = millis(); }
 
 void clearPerformance() {
+  noteInputs.reset();
   engine.panic();
   synth.panic();
+  midiPanicOutputs();
   xQueueReset(lightCues);
   portENTER_CRITICAL(&sharedLock);
   visual.held = 0;
@@ -77,6 +89,7 @@ void audioTask(void*) {
   int16_t pcm[BlockFrames * 2];
   synth.begin();
   engine.reset();
+  noteInputs.reset();
   for (;;) {
     bool panic;
     portENTER_CRITICAL(&sharedLock);
@@ -85,11 +98,17 @@ void audioTask(void*) {
     portEXIT_CRITICAL(&sharedLock);
     if (panic) { xQueueReset(commands); clearPerformance(); }
     Command command;
+    bool clearSound = false;
     // A bounded drain protects the audio deadline even if controls are noisy.
-    for (uint8_t i = 0; i < QueueLength && xQueueReceive(commands, &command, 0) == pdTRUE; ++i) {
+    for (uint8_t i = 0; i < 16 && xQueueReceive(commands, &command, 0) == pdTRUE; ++i) {
       switch (command.type) {
-        case CommandType::On: engine.noteOn(command.note, command.value); break;
-        case CommandType::Off: engine.noteOff(command.note); break;
+        case CommandType::On: noteInputs.noteOn(command.source, command.channel, command.note, command.value, engine); break;
+        case CommandType::Off: noteInputs.noteOff(command.source, command.channel, command.note, engine); break;
+        case CommandType::Control:
+          noteInputs.control(command.source, command.channel, command.note, command.value, engine);
+          if (command.note == 120) clearSound = true;
+          break;
+        case CommandType::SourceReset: noteInputs.releaseSource(command.source, engine); break;
         case CommandType::Pattern: engine.setPattern(command.value); break;
         case CommandType::Tempo: engine.setBpm(command.value); break;
         case CommandType::Preset: synth.setPreset(command.value); break;
@@ -98,14 +117,19 @@ void audioTask(void*) {
         case CommandType::Panic: clearPerformance(); break;
       }
     }
+    if (clearSound) { synth.panic(); midiPanicOutputs(); }
     LightCue cue;
     bool hasCue = false;
     float blockPeak = 0;
     for (uint16_t i = 0; i < BlockFrames; ++i) {
       const ArpEvent event = engine.tick();
-      if (event.off >= 0) synth.noteOff(event.off);
+      if (event.off >= 0) {
+        synth.noteOff(event.off);
+        midiSendGenerated(0x80, event.off, 0);
+      }
       if (event.on >= 0) {
         synth.noteOn(event.on, event.velocity);
+        midiSendGenerated(0x90, event.on, event.velocity);
         cue.note = event.on;
         cue.velocity = event.velocity;
         cue.step = event.step;
@@ -158,6 +182,42 @@ uint8_t keyIndex(uint8_t pair, uint8_t column) {
 }
 
 void pollEncoders();
+
+void pollMidi() {
+  midiPoll();
+  MidiInputEvent event;
+  for (uint8_t i = 0; i < 16 && midiRead(event); ++i) {
+    if (recoveryPending) continue;
+    if (event.reset) { send(CommandType::SourceReset, 0, 0, event.source); continue; }
+    const auto& message = event.message;
+    const uint8_t channel = message.status & 15;
+    switch (message.status & 0xF0) {
+      case 0x90:
+        send(message.data2 ? CommandType::On : CommandType::Off, message.data2,
+             message.data1, event.source, channel);
+        break;
+      case 0x80: send(CommandType::Off, 0, message.data1, event.source, channel); break;
+      case 0xB0:
+        if (message.data1 == 7) {
+          volume = message.data2;
+          send(CommandType::Volume, volume);
+          showOverlay(Overlay::Volume);
+        } else if (message.data1 == 64 || message.data1 == 120 ||
+                   message.data1 == 121 || message.data1 == 123) {
+          send(CommandType::Control, message.data2, message.data1, event.source, channel);
+        }
+        break;
+      case 0xC0:
+        if (message.data1 < PresetCount) {
+          preset = message.data1;
+          send(CommandType::Preset, preset);
+          showOverlay(Overlay::Preset);
+        }
+        break;
+      default: break;
+    }
+  }
+}
 
 void scanKeys() {
   // Documented matrix scan: drive HIGH, then verify ownership after
@@ -315,9 +375,11 @@ void arpSetup() {
   if (!commands || !lightCues || !audio.begin() ||
       xTaskCreatePinnedToCore(audioTask, "ARP_AUDIO", 6144, nullptr, 8, nullptr, 0) != pdPASS)
     audioFailed = true;
+  midiBegin();
 }
 
 void arpLoop() {
+  pollMidi();
   scanKeys();
   pollEncoders();
   updateLeds();

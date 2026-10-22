@@ -1,1 +1,1 @@
-32b2831c7bac3b006144e306e126e4c59ea9a8b5a172dcfcf81801685bb2984f  neon-orbit-v0.1.0.bin
+95e324e334b1fdac0c745dd88ae8efa918b88743dfa3f8bf21ce2aa12f2449db  neon-orbit-v0.2.0-beta.1.bin

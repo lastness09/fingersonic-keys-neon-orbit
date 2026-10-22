@@ -1,17 +1,30 @@
 {
-  "application": "neon-orbit-v0.1.0.bin",
+  "name": "Neon Orbit",
+  "version": "0.2.0-beta.1",
+  "application": "neon-orbit-v0.2.0-beta.1.bin",
   "boardPackage": "esp32:esp32@3.3.2",
-  "fqbn": "esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=default,FlashSize=16M,PartitionScheme=custom,PSRAM=disabled,CPUFreq=240,FlashMode=dio",
-  "bytes": 331008,
-  "sha256": "32b2831c7bac3b006144e306e126e4c59ea9a8b5a172dcfcf81801685bb2984f",
+  "fqbn": "esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=default,FlashSize=16M,PartitionScheme=custom,PSRAM=disabled,CPUFreq=240,FlashMode=dio",
+  "libraries": {
+    "Adafruit NeoPixel": "1.15.1",
+    "NimBLE-Arduino": "2.3.1"
+  },
+  "bytes": 676880,
+  "sha256": "95e324e334b1fdac0c745dd88ae8efa918b88743dfa3f8bf21ce2aa12f2449db",
   "app0Offset": "0x10000",
   "app0MaximumBytes": 2097152,
   "app1PreservedAt": "0x210000",
-  "name": "Neon Orbit",
-  "version": "0.1.0",
-  "prerelease": false,
-  "license": "MIT",
-  "hardwareTested": true,
-  "hostTestsPassed": 28,
-  "hardwareValidationSource": "Maintainer confirmation on 2026-10-21"
+  "prerelease": true,
+  "hardwareTested": false,
+  "validationNote": "MIDI integration requires on-device USB/BLE interoperability testing; see VALIDATION.md.",
+  "hostTestsPassed": 48,
+  "hostValidationDate": "2026-10-22",
+  "license": "MIT (project source); dependencies retain their licenses",
+  "midi": {
+    "usb": "USB MIDI 1.0 device, cable 0",
+    "bleName": "Neon Orbit",
+    "inputChannels": "1-16",
+    "outputChannel": 1,
+    "output": "Generated arpeggiator notes",
+    "hardwareInteroperabilityTested": false
+  }
 }

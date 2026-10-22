@@ -6,15 +6,15 @@
 
 Hold a few notes. Let them orbit. Neon Orbit turns Fingersonic Keys into a self-contained electronic instrument: ten rhythmic patterns, ten FM voices, a wide octave range and light trails that follow each generated note. Turn the knobs while you play to move from glassy plucks to metallic bells, rubbery bass and floating synth textures.
 
-**Version 0.1.0 has been tested on the instrument by the maintainer, confirmed on October 21, 2026. Compilation and all 28 host tests also pass.** Read the recovery section before installing, especially on devices produced before January 1, 2027.
+**MIDI preview: v0.2.0-beta.1 adds bidirectional USB MIDI and BLE MIDI. The ESP32-S3 build and host-test results are recorded in [VALIDATION.md](VALIDATION.md); the new USB/BLE integration still requires on-device interoperability testing.** The original v0.1.0 instrument was device-tested by the maintainer on October 21, 2026. Read the recovery section before installing, especially on devices produced before January 1, 2027.
 
-[Download App0 firmware](https://github.com/lastness09/fingersonic-keys-neon-orbit/releases/tag/v0.1.0) · [Keys community firmware](https://fingersonic.com/firmware/3/) · [Developer guide](https://github.com/lastness09/fingersonic-keys-devkit) · [Validation](VALIDATION.md) · [MIT license](LICENSE)
+[Download MIDI preview firmware](https://github.com/lastness09/fingersonic-keys-neon-orbit/releases/tag/v0.2.0-beta.1) · [Stable v0.1.0 community page](https://fingersonic.com/firmware/3/) · [Developer guide](https://github.com/lastness09/fingersonic-keys-devkit) · [Validation](VALIDATION.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
 
 ## Watch the hardware demo
 
 [![Watch Neon Orbit running on Fingersonic Keys on YouTube](https://i.ytimg.com/vi/pRCk6zMpI8U/hqdefault.jpg)](https://www.youtube.com/shorts/pRCk6zMpI8U)
 
-**[Watch Neon Orbit on Fingersonic Keys - YouTube Short](https://www.youtube.com/shorts/pRCk6zMpI8U)**. See and hear the firmware in action on the instrument. The video opens on YouTube; the downloadable WAV is a separate host-rendered preview.
+**[Watch Neon Orbit on Fingersonic Keys - YouTube Short](https://www.youtube.com/shorts/pRCk6zMpI8U)**. See and hear the original v0.1.0 instrument in action. This video does not validate the new MIDI preview. The video opens on YouTube; the downloadable WAV is a separate host-rendered preview.
 
 ## Develop your own version
 
@@ -22,8 +22,49 @@ Start with the [Fingersonic Keys Developer Guide](https://github.com/lastness09/
 
 [All Developer Kits](https://fingersonic.com/developers/#open-source-examples) · [Keys hardware contract](https://github.com/lastness09/fingersonic-keys-devkit/blob/main/HARDWARE_CONTRACT.md) · [Neon Orbit firmware page](https://fingersonic.com/firmware/3/)
 
+## USB MIDI and BLE MIDI
+
+Neon Orbit is now both a self-contained instrument and a MIDI arpeggiator. The physical keyboard, USB MIDI input and BLE MIDI input can play together. Incoming notes become roots for the selected pattern; the generated arpeggio drives the internal FM synth and is sent to both connected MIDI outputs on **channel 1**. Output is the generated arpeggio, rather than a duplicate raw-key stream. The local volume knob controls the internal synth and does not change outgoing note velocity.
+
+### Connect over USB
+
+1. Install the MIDI preview application BIN through the existing App1 uploader, following the recovery instructions below.
+2. Connect the instrument's native USB port to a computer or compatible USB host using a data-capable cable.
+3. Select **Neon Orbit / Neon Orbit MIDI** in your DAW or MIDI monitor. Enable it as an input to record the generated notes, or route a host MIDI track to it to supply arpeggiator roots.
+4. Hold some physical keys, or send Note On/Off messages from the host. The local synth and connected MIDI output follow the selected pattern, tempo and range.
+
+The firmware uses class-compliant **USB MIDI 1.0 device mode with TinyUSB**, one virtual cable (cable 0), and no USB serial/CDC interface. It does not act as a USB host for another USB keyboard and does not stream USB audio. The old Hardware CDC/JTAG USB build setting cannot provide this MIDI interface; use the updated build script.
+
+### Connect over Bluetooth Low Energy
+
+1. Open a BLE-MIDI-capable application's MIDI/Bluetooth connection panel.
+2. Find **Neon Orbit**, connect, and enable its MIDI notification/input port. This is a BLE MIDI peripheral, rather than a Bluetooth audio speaker.
+3. Select its MIDI ports in the application. One BLE central can connect at a time; USB can remain connected simultaneously. Device discovery and any required BLE-MIDI support depend on the host operating system and application.
+
+The standard BLE-MIDI service is `03b80e5a-ede8-4b33-a751-6ce34ec4c700`; its read/write/notify characteristic is `7772e5db-3868-4112-a1a9-f2669d106bf3`. The advertised name is included in the scan response. Notifications are sent only after the client subscribes. No audio is sent over BLE.
+
+### MIDI input and controls
+
+| Message | Behavior |
+| --- | --- |
+| Note On/Off, channels 1-16 | Add/release roots in A0-C8 (MIDI notes 21-108); velocity-zero Note On means Note Off |
+| CC64 sustain, per input/channel | Hold released MIDI roots until the pedal is released; physical keys have no sustain pedal state |
+| CC7 volume, any input channel | Set internal synth volume to 0-127 and synchronize the right-knob volume value |
+| Program Change 0-9 | Select the ten internal FM presets; some hosts display these as programs 1-10 |
+| CC123 All Notes Off | Release that input/channel's keys; an active sustain pedal still holds them |
+| CC120 All Sound Off | Clear that input/channel's roots, silence internal synthesis tails and request output panic; other held input roots can generate subsequent notes |
+| CC121 Reset All Controllers | Release that input/channel's sustain latch while retaining notes that are still held |
+| Unsupported channel messages, SysEx and MIDI Clock/Start/Stop | Do not control this release; tempo remains set by the left knob |
+
+Pitch bend, aftertouch, MPE, MIDI 2.0, external clock synchronization and raw MIDI Thru are not implemented. MIDI input is processed on arrival; BLE sender timestamps are decoded as framing and do not schedule future playback. Generated MIDI is sent from bounded queues outside the audio task, so USB/BLE timing is subject to host scheduling and connection latency.
+
+Notes and sustain are owned separately by each USB/BLE channel and the physical keyboard. Releasing a note on one input does not release another input's copy of the same pitch. Disconnecting a transport releases only its roots and pedal latches. A new output connection starts with All Sound Off/All Notes Off and receives future arpeggiator onsets, rather than replaying an old queue. Queue overflow or an output backlog older than 100 ms triggers cleanup; a busy output retries messages in order instead of dropping a Note Off. Recovery entry also requests an explicit Note Off and channel-1 panic before switching to App1; delivery is necessarily best effort if a host has stopped accepting data.
+
+Keep DAW routing from sending Neon Orbit's generated output straight back into the same input: there is no automatic MIDI Thru, but such host routing would still create an arpeggiator feedback loop. Release all physical keys, MIDI notes and sustain pedals to stop new notes.
+
 ## Make a small keyboard feel expansive
 
+- **USB MIDI + BLE MIDI:** receive notes, sustain, volume and program changes; send the generated arpeggio on channel 1.
 - **Ten rhythm patterns:** straight, syncopated, Euclidean, three-note bursts and randomized motion.
 - **Ten FM sounds:** plucks, kalimba, bells, bass, koto, marimba and synth textures, generated directly on the device.
 - **30-300 BPM:** press and turn the left encoder for tempo changes in 2 BPM increments; default 120 BPM.
@@ -40,16 +81,16 @@ The arpeggiator produces one gated note at a time; the eight synthesis slots all
 1. Start with a low listening level. Hold one or more keys to start the arpeggiator.
 2. Turn the left knob to choose a rhythm. Hold it while turning to change tempo.
 3. Turn the right knob to choose a sound. Click it to switch to volume mode, then turn to adjust the level; click again to return to sound selection.
-4. Hold the right knob while turning to adjust the octave range. Release all keys to stop new notes; short release tails and echo may remain.
+4. Hold the right knob while turning to adjust the octave range. Release the physical keys and any MIDI notes/sustain pedals to stop new notes; short release tails and echo may remain.
 
-There is no latch: the arpeggiator follows the notes you actually hold. Parameters reset at power-on; this release does not save settings.
+There is no physical-key latch: the arpeggiator follows active physical and MIDI roots, including MIDI sustain. Parameters reset at power-on; this release does not save settings.
 
 ## Complete controls
 
 | Gesture | Action |
 | --- | --- |
 | Hold one or more keyboard keys | Run the selected pattern using those notes and the selected octave range |
-| Release all keyboard keys | Stop the arpeggiator; allow existing synthesis/echo tails to decay |
+| Release all keyboard keys | Release the physical roots; MIDI and sustained roots continue until their own releases |
 | Turn left knob | Cycle through the ten patterns |
 | Hold left knob and turn | Change tempo by 2 BPM per detent, from 30 to 300 BPM |
 | Short-click right knob | Toggle sound-selection and volume modes; starts in sound mode |
@@ -106,18 +147,18 @@ Parameter feedback uses cyan for pattern selection, purple for sound selection, 
 
 This firmware is for **Fingersonic Keys**, ESP32-S3, 16 MB flash, existing App0/App1 partition layout. It uses internal RAM with PSRAM disabled. It is not a Guitar or Beats firmware.
 
-This release intentionally focuses on arpeggiation and direct synthesis. It does not provide USB MIDI, BLE MIDI, loops, the official chord mode, transposition, pitch bend or official app control. There is no sample playback and no SF2 installation step. If you extend it into a sampler, keep banks in **SF2**: the installed App1 uploader supports only executable BIN firmware and SF2 banks.
+This release intentionally focuses on arpeggiation and direct synthesis. It does not provide loops, the official chord mode, transposition, pitch bend or official app control. There is no sample playback and no SF2 installation step. If you extend it into a sampler, keep banks in **SF2**: the installed App1 uploader supports only executable BIN firmware and SF2 banks.
 
 Power, charging and battery-level management remain handled by the independent hardware chip. The application does not control charging or read battery state. It does not mount or format LittleFS, change the sound bank or write official instrument settings. The only intentional persistent write is OTA boot selection when you explicitly invoke App1 recovery.
 
 ## Installation and return to the official instrument
 
-1. Obtain `neon-orbit-v0.1.0.bin` from the release. Check its SHA-256 against the release manifest. Upload the **application BIN only**, not a ZIP, ELF, bootloader, partition table or merged system image.
+1. Obtain `neon-orbit-v0.2.0-beta.1.bin` from the release. Check its SHA-256 against the release manifest. Upload the **application BIN only**, not a ZIP, ELF, bootloader, partition table or merged system image.
 2. Enter the existing App1 uploader. With the official Keys firmware running, hold Key0 and quickly press the left knob five times. Devices produced on or after January 1, 2027 with the recovery bootloader also support holding the right knob while powering on for at least 0.5 seconds.
 3. Follow the official updater's hotspot connection instructions. With the host connected to the device, send the BIN to App1's existing upload interface. For example, on Windows:
 
 ```powershell
-curl.exe --fail --show-error -F "file=@C:\path\to\neon-orbit-v0.1.0.bin" http://192.168.4.1/upload
+curl.exe --fail --show-error -F "file=@C:\path\to\neon-orbit-v0.2.0-beta.1.bin" http://192.168.4.1/upload
 ```
 
 4. Keep power stable, let the upload finish and allow the instrument to restart. Do not run the Arduino IDE's normal full-device upload or change eFuses.
@@ -142,6 +183,7 @@ arduino-cli config add board_manager.additional_urls https://espressif.github.io
 arduino-cli core update-index
 arduino-cli core install esp32:esp32@3.3.2
 arduino-cli lib install "Adafruit NeoPixel@1.15.1"
+arduino-cli lib install "NimBLE-Arduino@2.3.1"
 ```
 
 Build in PowerShell:
@@ -150,13 +192,13 @@ Build in PowerShell:
 .\build.ps1 -ArduinoCli 'C:\path\to\arduino-cli.exe'
 ```
 
-The script compiles only, checks ESP32-S3 chip ID and the 2 MiB App0 limit, and writes `build/neon-orbit-v0.1.0.bin` plus `build/manifest.json`. Board settings: ESP32S3 Dev Module, 240 MHz, 16 MB flash, DIO 80 MHz, custom partition table, PSRAM disabled, Hardware CDC and JTAG, USB CDC On Boot disabled. `partitions.csv` is a local build reference; never upload its generated system image through the App0 workflow.
+The script compiles only, checks ESP32-S3 chip ID and the 2 MiB App0 limit, and writes `build/neon-orbit-v0.2.0-beta.1.bin` plus `build/manifest.json`. Board settings: ESP32S3 Dev Module, 240 MHz, 16 MB flash, DIO 80 MHz, custom partition table, PSRAM disabled, USB-OTG (TinyUSB), USB CDC On Boot disabled. NimBLE-Arduino 2.3.1 supplies BLE; no external USB-MIDI or BLE-MIDI transport library is required. The build script checks the pinned board and library versions. `partitions.csv` is a local build reference; never upload its generated system image through the App0 workflow.
 
 ## Tests and architecture
 
-`ArpEngine` schedules note/gate events in the audio sample clock. `FmSynth` renders voices and echo. `Controls` handles encoders, buttons, contacts and the recovery gesture. `PerformanceLeds` renders queued note cues outside the audio task. `ArpFirmware` connects the matrix and controls to the audio task using fixed queues. `App1Recovery` checks the dedicated uploader partition and the OTA result before restarting.
+`ArpEngine` schedules note/gate events in the audio sample clock. `FmSynth` renders voices and echo. `Controls` handles encoders, buttons, contacts and the recovery gesture. `PerformanceLeds` renders queued note cues outside the audio task. `ArpFirmware` connects the matrix and controls to the audio task using fixed queues. `MidiInput` merges physical and MIDI note ownership, `MidiProtocol` validates USB/BLE framing, `MidiOutput` handles output retries/panic, and `MidiTransport` connects TinyUSB and NimBLE without calling either stack from the audio task. `App1Recovery` checks the dedicated uploader partition and the OTA result before restarting.
 
-The host tests exercise the real portable engine, synth, controls, recovery selector and LED renderer with mocked device OTA calls. On Windows with the documented LLVM tools:
+The host tests exercise the real portable engine, synth, controls, recovery selector, LED renderer and MIDI protocol/ownership/output queues with mocked device OTA calls. They do not replace USB enumeration or BLE interoperability testing on an instrument. On Windows with the documented LLVM tools:
 
 ```text
 python tests/test_core.py --llvm-bin C:/path/to/llvm/bin --preview build/neon-orbit-preview.wav -v
@@ -166,4 +208,4 @@ The runner currently targets Windows and needs `clang++.exe`, `llvm-dlltool.exe`
 
 ## License and scope
 
-The source in this repository is the independent Neon Orbit community project, originally developed as `main2_ARP`, released under the [MIT license](LICENSE). Third-party Arduino, ESP-IDF and NeoPixel dependencies retain their respective licenses and are installed separately. This repository does not publish the official Fingersonic Keys application, the App1 uploader or factory bootloader source.
+The source in this repository is the independent Neon Orbit community project, originally developed as `main2_ARP`, released under the [MIT license](LICENSE). Third-party Arduino, ESP-IDF, NimBLE and NeoPixel dependencies retain their respective licenses and are installed separately; see [third-party notices](THIRD_PARTY_NOTICES.md). This repository does not publish the official Fingersonic Keys application, the App1 uploader or factory bootloader source.
